@@ -22,7 +22,8 @@
         Gt: 'Gt',
         Gte: 'Gte',
         And: 'And',
-        Or: 'Or'
+        Or: 'Or',
+        Group: 'Group'
     };
 
     function Token(value, type)
@@ -46,7 +47,47 @@
             var tokentype = TokenType.Unknown; 
             var tokenval = "";
 
-            if (/^\d+$/.test(expr[i]))
+            if (expr[i] == "(")
+            {
+                // -- Take index of both matched parentheses
+                var openIndex = i;
+                // -- Count of inner parenthesis
+                var innerParenthesisCount = 0;
+                // -- Start with next character after open parenthesis
+                var pIndex = openIndex + 1;
+                // -- Index of close pharenthesis;
+                var closeIndex
+                while (pIndex < expr.length) {
+                    var currentChar = expr[pIndex];
+                    // -- If we found an open parethesis
+                    if (currentChar == "(") {
+                        // -- Increase
+                        innerParenthesisCount++;
+                    }
+                    else if (currentChar == ")") {
+                        // -- If the count is 0, group's closed parenthesis found
+                        if (innerParenthesisCount == 0) {
+                            closeIndex = pIndex;
+                            break;
+                        }
+                        else {
+                            // -- Decrease
+                            innerParenthesisCount--;
+                        }
+                    }
+                    pIndex++;
+                }
+
+
+                //var closeIndex = expr.lastIndexOf(")");
+                // -- tokenval is the set of inner expressions
+                tokenval = tokenize(expr.substring(openIndex + 1, closeIndex));
+                // -- Group type
+                tokentype = TokenType.Group;
+                // -- Move i to after close parentheses
+                i = closeIndex;
+            }
+            else if (/^\d+$/.test(expr[i]))
             {
                 tokentype = TokenType.Integer;
                 tokenval += expr[i];
@@ -217,90 +258,88 @@
     Literal.prototype = Object.create(UnaryExpression.prototype);
     Literal.prototype.constructor = Literal;
 
+    function parse(tokens) {
 
-    function parse(tokens)
-    {
         var index = 0;
 
-        function hasTokens()
-        {
-            return index < tokens.length;
+        function process() {
+            var expressions = [];
+
+            var lastExpression = null;
+
+            for (index = 0; index < tokens.length; index++) {
+                // -- Takes current token
+                var currentToken = tokens[index];
+                
+                if (currentToken.type == TokenType.Or) {
+                    // -- Add last expression to the array
+                    if (lastExpression != null) {
+                        expressions.push(lastExpression);
+                        lastExpression = null;
+                    }
+                    continue;
+                }
+
+                // -- Initialize current expression in null
+                var currentExpression = null;
+
+                // -- If group
+                if (currentToken.type == TokenType.Group) {
+                    currentExpression = parse(currentToken.value)
+                }
+
+                // -- If comparison
+                if (currentToken.type == TokenType.Gt || currentToken.type == TokenType.Gte || currentToken.type == TokenType.Lt || currentToken.type == TokenType.Lte) {
+                    // -- Current token is the operator
+                    // -- Previuos and next token are the values/variable to compare
+                    currentExpression = new ComparisonExpression(currentToken, primaryType(tokens[index - 1]), primaryType(tokens[index + 1]));
+                }
+                // -- If equality
+                else if (currentToken.type == TokenType.Equals || currentToken.type == TokenType.NotEquals) {
+                    // -- Current token is the operator
+                    // -- Previuos and next token are the values/variable to compare
+                    currentExpression = new EqualityExpression(currentToken, primaryType(tokens[index - 1]), primaryType(tokens[index + 1]));
+                }
+                
+                if (currentExpression != null) {
+                    // -- If last expression is not null we have to add an andexpression with last and current expression
+                    lastExpression = lastExpression != null ? new AndExpression(new Token("&&", TokenType.And), lastExpression, currentExpression) : currentExpression;
+                }
+            }
+
+            // -- Add last expression to the array
+            if (lastExpression != null) {
+                expressions.push(lastExpression);
+                lastExpression = null;
+            }
+
+            var lastOrExpression = null;
+            // -- Convert array of expression to a tree of ors
+            for (var j = 0; j < expressions.length; j++) {
+                lastOrExpression = lastOrExpression != null ? new OrExpression(new Token("||", TokenType.Or), lastOrExpression, expressions[j]) : expressions[j];
+            }
+
+            return lastOrExpression;
+        }       
+
+
+        function primaryType(token) {
+            if (token.type == TokenType.Integer || token.type == TokenType.String || token.type == TokenType.Bool || token.type == TokenType.Null)
+                return new Literal(token);
+
+            if (token.type == TokenType.Variable)
+                return new Variable(token);
+
+            if (token.type == TokenType.Group) {
+                return parseAux(token.tokens);
+            }
+
+
+            throw new Error("Unexpected token " + token.Value);
         }
 
-        function peek()
-        {
-            return tokens[index];
-        }
-
-        function consume()
-        {
-            return tokens[index++];
-        }
-
-        function expression()
-        {
-            return orExpression();
-        }
-
-        function orExpression()
-        {
-            var left = andExpression();
-
-            if (hasTokens() && peek().type == TokenType.Or)
-                return new OrExpression(consume(), left, andExpression());
-
-            return left;
-        }
-
-        function andExpression()
-        {
-            var left = equalityExpression();
-
-            if (hasTokens() && peek().type == TokenType.And)
-                return new AndExpression(consume(), left, equalityExpression());
-
-            return left;
-        }
-
-        function equalityExpression()
-        {
-            var left = comparisonExpression();
-
-            if (hasTokens() && (peek().type == TokenType.Equals || peek().type == TokenType.NotEquals))
-                return new EqualityExpression(consume(), left, comparisonExpression());
-
-            return left;
-        }
-
-        function comparisonExpression()
-        {
-            var left = primary();
-
-            if (!hasTokens())
-                return left;
-
-            var next = peek();
-
-            if (next.type == TokenType.Gt || next.type == TokenType.Gte || next.type == TokenType.Lt || next.type == TokenType.Lte)
-                return new ComparisonExpression(consume(), left, primary());
-
-            return left;
-        }
-
-        function primary()
-        {
-            var next = consume();
-
-            if (next.type == TokenType.Integer || next.type == TokenType.String || next.type == TokenType.Bool || next.type == TokenType.Null)
-                return new Literal(next);
-
-            if (next.type == TokenType.Variable)
-                return new Variable(next);
-
-            throw new Error("Unexpected token " + next.Value);
-        }
-
-        return expression();
+        // -- Execute the function
+        return process();
     }
 
     function run(root, symtable)
@@ -390,8 +429,10 @@
         throw new Error("Unhandled operand: " + node ? node.toString() : "(null)");     
     }
 
-    global["simpleExprEval"] = function(source, symtable) {
-        return run(parse(tokenize(source)), symtable);
+    global["simpleExprEval"] = function (source, symtable) {
+        var tokens = tokenize(source);
+        var parsed = parse(tokens);
+        return run(parsed, symtable);
     }
     
 })(this);
